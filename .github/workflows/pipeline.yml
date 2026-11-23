@@ -1,0 +1,96 @@
+name: CI-CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Pruebas automatizadas
+    runs-on: ubuntu-latest
+    steps:
+      - name: Obtener código
+        uses: actions/checkout@v4
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Ejecutar pruebas
+        run: python -m unittest discover -s tests -v
+
+  release-check:
+    name: Construir y comprobar imagen
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Obtener código
+        uses: actions/checkout@v4
+      - name: Preparar entorno de liberación
+        run: bash scripts/setup-release.sh
+      - name: Validar configuración Docker Compose
+        run: docker compose config --quiet
+      - name: Iniciar imagen y comprobar salud
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose up -d --build
+          trap 'docker compose down' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8080/healthz; then
+              echo
+              echo "Imagen validada correctamente."
+              exit 0
+            fi
+            sleep 1
+          done
+          docker compose logs --tail=80
+          exit 1
+
+  deploy:
+    name: Desplegar en producción
+    needs: release-check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+    steps:
+      - name: Obtener código
+        uses: actions/checkout@v4
+      - name: Copiar y desplegar por SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS DEPLOY_PATH; do
+            if [[ -z "${!name}" ]]; then
+              echo "Error: falta configurar $name en el entorno production." >&2
+              exit 1
+            fi
+          done
+
+          if [[ ! "$DEPLOY_PATH" =~ ^/[A-Za-z0-9._/-]+$ || "$DEPLOY_PATH" == *".."* ]]; then
+            echo "Error: DEPLOY_PATH debe ser una ruta absoluta segura, por ejemplo /opt/tareas-claras." >&2
+            exit 1
+          fi
+
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/deploy_key" "$HOME/.ssh/known_hosts"
+          SSH_OPTIONS=(-i "$HOME/.ssh/deploy_key" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes)
+
+          ssh "${SSH_OPTIONS[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$DEPLOY_PATH'"
+          tar --exclude=.git --exclude=.env -czf "$RUNNER_TEMP/release.tar.gz" .
+          scp "${SSH_OPTIONS[@]}" "$RUNNER_TEMP/release.tar.gz" "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/release.tar.gz"
+          ssh "${SSH_OPTIONS[@]}" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "tar -xzf '$DEPLOY_PATH/release.tar.gz' -C '$DEPLOY_PATH' && rm '$DEPLOY_PATH/release.tar.gz' && cd '$DEPLOY_PATH' && bash scripts/setup-release.sh && bash scripts/deploy.sh"
