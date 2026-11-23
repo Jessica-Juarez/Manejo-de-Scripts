@@ -26,24 +26,25 @@ Comprueba <http://localhost:8080/healthz>. Para detenerla, ejecuta `docker compo
 
 ## Pipeline y despliegue
 
-`.github/workflows/pipeline.yml` ejecuta las pruebas y verifica la imagen en cada pull request y cambio a `main`. Los cambios a `main` también se despliegan por SSH al entorno GitHub `production`.
+`.github/workflows/pipeline.yml` ejecuta las pruebas y verifica la imagen en cada pull request y cambio a `main`. Después de validar un cambio a `main`, solicita a Render el despliegue del commit probado.
 
 Para activar el despliegue:
 
-1. Crea un repositorio GitHub y configura en **Settings → Environments** un entorno llamado `production`.
-2. Añade estos *secrets* al entorno: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY` (clave privada) y `DEPLOY_KNOWN_HOSTS` (clave de host SSH verificada por un canal confiable).
-3. Añade la variable `DEPLOY_PATH`, por ejemplo `/opt/tareas-claras`.
-4. Prepara un servidor Linux con Docker Engine, Docker Compose v2 y `curl`. Permite SSH desde GitHub Actions y el acceso al puerto de la aplicación (8080 por defecto).
-5. Configura el remoto del repositorio y sube la rama `main`. Los comandos y los detalles están en [`docs/entrega.md`](docs/entrega.md).
+1. En [Render](https://dashboard.render.com/), crea un **Web Service**, conecta este repositorio y elige la rama `main`, lenguaje **Docker** y plan **Free**. Configura `/healthz` como Health Check Path.
+2. Desactiva **Auto-Deploy** en la configuración del servicio para que los cambios posteriores se desplieguen únicamente después de las pruebas de GitHub Actions. La creación inicial del servicio puede iniciar un primer despliegue.
+3. Copia el **Deploy Hook** desde **Settings** del servicio. Es una URL secreta: no la publiques ni la compartas por chat.
+4. En GitHub, entra a **Settings → Environments → production → Environment secrets** y crea `RENDER_DEPLOY_HOOK_URL` con esa URL.
+5. Sube estos cambios a `main` y comprueba la ejecución en GitHub Actions y luego el estado del despliegue en Render. Una respuesta exitosa al hook solo significa que Render aceptó la solicitud; no confirma que la aplicación ya se haya publicado.
 
-La carpeta actual ya es un repositorio Git local en la rama `main`; no tiene remoto configurado ni se ha creado un commit. Hace falta enlazarla al repositorio GitHub que vayas a usar.
+En el plan gratuito, Render detiene la aplicación tras 15 minutos sin tráfico y puede tardar aproximadamente un minuto en reactivarla. Al detenerse se pierden las tareas en memoria; revisa los [límites del plan gratuito](https://render.com/docs/free).
 
 ## Archivos de entrega
 
 - [`docs/entrega.md`](docs/entrega.md): caso de estudio, pipeline, entorno, niveles de servicio, métricas y configuración.
 - [`.github/workflows/pipeline.yml`](.github/workflows/pipeline.yml): pruebas, validación de la imagen y despliegue continuo.
 - [`scripts/setup-release.sh`](scripts/setup-release.sh): preparación y validación del entorno de liberación.
-- [`scripts/deploy.sh`](scripts/deploy.sh): generación y comprobación del despliegue.
+- [`scripts/deploy-render.sh`](scripts/deploy-render.sh): solicita el despliegue en Render del commit validado.
+- [`scripts/deploy.sh`](scripts/deploy.sh): despliegue y comprobación local con Docker Compose.
 - [`tests/test_app.py`](tests/test_app.py): pruebas automatizadas.
 
 > La lista de tareas se guarda en memoria: si el contenedor se reinicia o se vuelve a desplegar, los datos se pierden. Es una limitación deliberada de este proyecto de demostración.
